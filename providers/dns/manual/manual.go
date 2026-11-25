@@ -93,7 +93,7 @@ func (*DNSProvider) CleanUp(ctx context.Context, domain, token, keyAuth string) 
 	}
 
 	fmt.Printf("lego: You can now remove this TXT record from your %s zone:\n", authZone)
-	fmt.Printf(dnsTemplate+"\n", info.EffectiveFQDN, dns01.DefaultTTL, "...")
+	fmt.Printf(dnsTemplate+"\n", info.EffectiveFQDN, dns01.DefaultTTL, info.Value)
 
 	return nil
 }

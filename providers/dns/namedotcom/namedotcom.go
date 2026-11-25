@@ -164,7 +164,7 @@ func (d *DNSProvider) CleanUp(ctx context.Context, domain, token, keyAuth string
 	}
 
 	for _, rec := range records {
-		if rec.Fqdn == info.EffectiveFQDN && rec.Type == "TXT" {
+		if rec.Fqdn == info.EffectiveFQDN && rec.Type == "TXT" && rec.Answer == info.Value {
 			request := &namecom.DeleteRecordRequest{
 				DomainName: domain,
 				ID:         rec.ID,

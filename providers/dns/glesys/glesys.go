@@ -137,8 +137,12 @@ func (d *DNSProvider) Present(ctx context.Context, domain, token, keyAuth string
 		return err
 	}
 
+	// Several authorizations can share EffectiveFQDN but have different TXT
+	// values. Key by both so cleaning one does not delete another record ID.
+	recordKey := glesysRecordKey(info.EffectiveFQDN, info.Value)
+
 	// save data necessary for CleanUp
-	d.activeRecords[info.EffectiveFQDN] = recordID
+	d.activeRecords[recordKey] = recordID
 
 	return nil
 }
@@ -151,16 +155,29 @@ func (d *DNSProvider) CleanUp(ctx context.Context, domain, token, keyAuth string
 	d.inProgressMu.Lock()
 	defer d.inProgressMu.Unlock()
 
-	if _, ok := d.activeRecords[info.EffectiveFQDN]; !ok {
+	recordKey := glesysRecordKey(info.EffectiveFQDN, info.Value)
+
+	recordID, ok := d.activeRecords[recordKey]
+	if !ok {
+		// Compatibility with state recorded by older versions, which used the
+		// FQDN as the only key.
+		recordKey = info.EffectiveFQDN
+		recordID, ok = d.activeRecords[recordKey]
+	}
+
+	if !ok {
 		// if there is no cleanup information then just return
 		return nil
 	}
 
-	recordID := d.activeRecords[info.EffectiveFQDN]
-	delete(d.activeRecords, info.EffectiveFQDN)
+	delete(d.activeRecords, recordKey)
 
 	// delete TXT record from authZone
 	return d.client.DeleteTXTRecord(ctx, recordID)
+}
+
+func glesysRecordKey(fqdn, value string) string {
+	return fqdn + "\x00" + value
 }
 
 // Timeout returns the values (20*time.Minute, 20*time.Second) which

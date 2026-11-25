@@ -160,6 +160,10 @@ func (d *DNSProvider) CleanUp(ctx context.Context, domain, token, keyAuth string
 	}
 
 	for _, record := range records {
+		if record.Value == nil || *record.Value != info.Value {
+			continue
+		}
+
 		request := dnspod.NewDeleteRecordRequest()
 		request.Domain = zone.Name
 		request.DomainId = zone.DomainId

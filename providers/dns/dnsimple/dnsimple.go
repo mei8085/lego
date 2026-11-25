@@ -143,6 +143,10 @@ func (d *DNSProvider) CleanUp(ctx context.Context, domain, token, keyAuth string
 	var lastErr error
 
 	for _, rec := range records {
+		if rec.Content != info.Value {
+			continue
+		}
+
 		_, err := d.client.Zones.DeleteRecord(ctx, accountID, rec.ZoneID, rec.ID)
 		if err != nil {
 			lastErr = fmt.Errorf("dnsimple: %w", err)

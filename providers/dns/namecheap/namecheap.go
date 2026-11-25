@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-acme/lego/v5/challenge"
@@ -85,6 +86,31 @@ type DNSProvider struct {
 	client *internal.Client
 }
 
+var (
+	namecheapZonesMu sync.Mutex
+	namecheapZones   = make(map[string]*sync.Mutex)
+)
+
+// namecheapZoneLock serializes read-modify-write updates for one Namecheap
+// zone, including updates started through different provider instances in the
+// same process. The Namecheap API replaces the complete host list, so
+// concurrent Present and CleanUp calls can otherwise lose each other's TXT
+// values.
+func namecheapZoneLock(sld, tld string) *sync.Mutex {
+	key := sld + "." + tld
+
+	namecheapZonesMu.Lock()
+	defer namecheapZonesMu.Unlock()
+
+	mu, ok := namecheapZones[key]
+	if !ok {
+		mu = new(sync.Mutex)
+		namecheapZones[key] = mu
+	}
+
+	return mu
+}
+
 // NewDNSProvider returns a DNSProvider instance configured for namecheap.
 // Credentials must be passed in the environment variables:
 // NAMECHEAP_API_USER and NAMECHEAP_API_KEY.
@@ -146,6 +172,10 @@ func (d *DNSProvider) Present(ctx context.Context, domain, token, keyAuth string
 		return fmt.Errorf("namecheap: %w", err)
 	}
 
+	zoneMu := namecheapZoneLock(pr.sld, pr.tld)
+	zoneMu.Lock()
+	defer zoneMu.Unlock()
+
 	records, err := d.client.GetHosts(ctx, pr.sld, pr.tld)
 	if err != nil {
 		return fmt.Errorf("namecheap: get hosts: %w", err)
@@ -159,7 +189,21 @@ func (d *DNSProvider) Present(ctx context.Context, domain, token, keyAuth string
 		TTL:     strconv.Itoa(d.config.TTL),
 	}
 
-	records = append(records, record)
+	// Retrying Present for the same authorization must not create a duplicate
+	// of its own value. Other values are left untouched.
+	var alreadyPresent bool
+
+	for _, h := range records {
+		if h.Name == record.Name && h.Type == record.Type && h.Address == record.Address {
+			alreadyPresent = true
+
+			break
+		}
+	}
+
+	if !alreadyPresent {
+		records = append(records, record)
+	}
 
 	for _, h := range records {
 		log.Debugf(log.LazySprintf("%-5.5s %-30.30s %-6s %-70.70s", h.Type, h.Name, h.TTL, h.Address))
@@ -180,6 +224,10 @@ func (d *DNSProvider) CleanUp(ctx context.Context, domain, token, keyAuth string
 	if err != nil {
 		return fmt.Errorf("namecheap: %w", err)
 	}
+
+	zoneMu := namecheapZoneLock(pr.sld, pr.tld)
+	zoneMu.Lock()
+	defer zoneMu.Unlock()
 
 	records, err := d.client.GetHosts(ctx, pr.sld, pr.tld)
 	if err != nil {

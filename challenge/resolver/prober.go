@@ -134,6 +134,10 @@ func sequentialSolve(ctx context.Context, authSolvers []*selectedAuthSolver, fai
 		if err != nil {
 			failures.Add(domain, err)
 
+			// Allow another authorization sharing this challenge identity to
+			// present the record again after the failed attempt cleaned it up.
+			delete(uniq, authSolver.authz.Identifier.Value+chlg.Token)
+
 			cleanUp(ctx, authSolver.solver, authSolver.authz)
 
 			continue

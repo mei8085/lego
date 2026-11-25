@@ -9,6 +9,11 @@ import (
 // provider. Present presents the solution to a challenge available to
 // be solved. CleanUp will be called by the challenge if Present ends
 // in a non-error state.
+//
+// For DNS-01, Present and CleanUp identify this authorization by the
+// (domain, token, keyAuth) tuple. Several authorizations can share the same
+// validation name, so CleanUp must remove only the TXT value derived from
+// keyAuth and leave other TXT values on that name untouched.
 type Provider interface {
 	Present(ctx context.Context, domain, token, keyAuth string) error
 	CleanUp(ctx context.Context, domain, token, keyAuth string) error

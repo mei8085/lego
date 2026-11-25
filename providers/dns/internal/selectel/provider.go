@@ -116,11 +116,11 @@ func (d *DNSProvider) CleanUp(ctx context.Context, domain, token, keyAuth string
 		return fmt.Errorf("list records: %w", err)
 	}
 
-	// Delete records with specific FQDN
+	// Delete only the challenge TXT record with the expected value.
 	var lastErr error
 
 	for _, record := range records {
-		if record.Name == recordName {
+		if record.Name == recordName && record.Type == "TXT" && record.Content == info.Value {
 			err = d.client.DeleteRecord(ctx, domainObj.ID, record.ID)
 			if err != nil {
 				lastErr = fmt.Errorf("delete record: %w", err)

@@ -134,6 +134,12 @@ func (d *DNSProvider) CleanUp(ctx context.Context, domain, token, keyAuth string
 	var allErr []string
 
 	for _, rec := range records {
+		// The API can return the TXT data with or without the surrounding
+		// quotes used when creating the record.
+		if strings.Trim(rec.Data, `"`) != info.Value {
+			continue
+		}
+
 		err := d.client.DomainRecord.Delete(ctx, zoneDomain, rec.ID)
 		if err != nil {
 			allErr = append(allErr, err.Error())

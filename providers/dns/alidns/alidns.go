@@ -190,6 +190,10 @@ func (d *DNSProvider) CleanUp(ctx context.Context, domain, token, keyAuth string
 	}
 
 	for _, rec := range records {
+		if ptr.Deref(rec.Value) != info.Value {
+			continue
+		}
+
 		request := &alidns.DeleteDomainRecordRequest{
 			RecordId: rec.RecordId,
 		}

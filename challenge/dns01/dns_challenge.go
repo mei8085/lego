@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-acme/lego/v5/acme"
@@ -41,6 +42,11 @@ type Challenge struct {
 	provider challenge.Provider
 	preCheck preCheck
 }
+
+// dnsRecordLocks serializes provider read/modify/write operations for the
+// same raw validation name, including operations started by different
+// Challenge instances in one process.
+var dnsRecordLocks sync.Map
 
 func NewChallenge(core *api.Core, validate ValidateFunc, provider challenge.Provider, opts ...ChallengeOption) *Challenge {
 	chlg := &Challenge{
@@ -75,6 +81,9 @@ func (c *Challenge) PreSolve(ctx context.Context, authz acme.Authorization) erro
 	if c.provider == nil {
 		return fmt.Errorf("dns01: no DNS Provider configured (%s)", domain)
 	}
+
+	unlock := lockChallengeRecord(authz.Identifier.Value)
+	defer unlock()
 
 	// Generate the Key Authorization for the challenge
 	keyAuth, err := c.core.GetKeyAuthorization(chlng.Token)
@@ -156,7 +165,21 @@ func (c *Challenge) CleanUp(ctx context.Context, authz acme.Authorization) error
 		return err
 	}
 
+	unlock := lockChallengeRecord(authz.Identifier.Value)
+	defer unlock()
+
 	return c.provider.CleanUp(ctx, authz.Identifier.Value, chlng.Token, keyAuth)
+}
+
+func lockChallengeRecord(domain string) func() {
+	fqdn := getAuthorizationDomainName(domain)
+
+	value, _ := dnsRecordLocks.LoadOrStore(fqdn, &sync.Mutex{})
+	mu := value.(*sync.Mutex)
+
+	mu.Lock()
+
+	return mu.Unlock
 }
 
 func (c *Challenge) Sequential() (bool, time.Duration) {

@@ -160,7 +160,7 @@ func (d *DNSProvider) CleanUp(ctx context.Context, domain, token, keyAuth string
 	var record *bunny.DNSRecord
 
 	for _, r := range zone.Records {
-		if ptr.Deref(r.Name) == subDomain && ptr.Deref(r.Type) == bunny.DNSRecordTypeTXT {
+		if ptr.Deref(r.Name) == subDomain && ptr.Deref(r.Type) == bunny.DNSRecordTypeTXT && ptr.Deref(r.Value) == info.Value {
 			r := r
 			record = &r
 
