@@ -138,16 +138,34 @@ func (a *Core) postAsGet(ctx context.Context, uri string, response any) (*http.R
 }
 
 func (a *Core) retrievablePost(ctx context.Context, uri string, content []byte, response any) (*http.Response, error) {
+	// Keep one nonce source and signer for the whole logical request. A nonce
+	// returned in a response is therefore offered first to that request's
+	// retry, while concurrent requests keep their own independent state.
+	nonceSource := nonces.NewNonceSource(ctx, a.nonceManager)
+	defer nonceSource.Flush()
+
+	signer := a.signer()
+
 	// during tests, allow to support ~90% of bad nonce with a minimum of attempts.
 	bo := backoff.NewExponentialBackOff()
 	bo.InitialInterval = 200 * time.Millisecond
 	bo.MaxInterval = 5 * time.Second
 
 	operation := func() (*http.Response, error) {
-		resp, err := a.signedPost(ctx, uri, content, response)
+		resp, err := a.sendSignedPost(ctx, signer, nonceSource, uri, content, response)
+
+		_, isNonceError := errors.AsType[*acme.NonceError](err)
+
+		if !isNonceError {
+			// The nonce from a terminal response goes back to the shared pool
+			// immediately. For a badNonce response, keep it in this source so
+			// the retry for this logical request consumes it first.
+			nonceSource.Flush()
+		}
+
 		if err != nil {
-			// Retry if the nonce was invalidated
-			if _, ok := errors.AsType[*acme.NonceError](err); ok {
+			// Retry if the nonce was invalidated.
+			if isNonceError {
 				return resp, err
 			}
 
@@ -165,7 +183,21 @@ func (a *Core) retrievablePost(ctx context.Context, uri string, content []byte, 
 }
 
 func (a *Core) signedPost(ctx context.Context, uri string, content []byte, response any) (*http.Response, error) {
-	signedContent, err := a.signer().SignContent(a.nonceManager.NewNonceSource(ctx), uri, content)
+	nonceSource := nonces.NewNonceSource(ctx, a.nonceManager)
+	defer nonceSource.Flush()
+
+	return a.sendSignedPost(ctx, a.signer(), nonceSource, uri, content, response)
+}
+
+func (a *Core) sendSignedPost(
+	ctx context.Context,
+	signer *secure.Signer,
+	nonceSource *nonces.NonceSource,
+	uri string,
+	content []byte,
+	response any,
+) (*http.Response, error) {
+	signedContent, err := signer.SignContent(nonceSource, uri, content)
 	if err != nil {
 		return nil, fmt.Errorf("failed to post JWS message: failed to sign content: %w", err)
 	}
@@ -174,10 +206,13 @@ func (a *Core) signedPost(ctx context.Context, uri string, content []byte, respo
 
 	resp, err := a.doer.Post(ctx, uri, signedBody, "application/jose+json", response)
 
-	// nonceErr is ignored to keep the root error.
+	// Keep the nonce with the source that signed this attempt. If this is a
+	// one-off signedPost call, its deferred Flush returns the nonce to the
+	// shared manager. For a retrievable POST, a badNonce retry consumes it
+	// before the logical request's final Flush runs.
 	nonce, nonceErr := nonces.GetFromResponse(resp)
 	if nonceErr == nil {
-		a.nonceManager.Push(nonce)
+		nonceSource.Push(nonce)
 	}
 
 	return resp, err
