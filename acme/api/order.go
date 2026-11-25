@@ -119,7 +119,7 @@ func (o *OrderService) Get(ctx context.Context, orderURL string) (acme.ExtendedO
 }
 
 // UpdateForCSR Updates an order for a CSR.
-func (o *OrderService) UpdateForCSR(ctx context.Context, orderURL string, csr []byte) (acme.ExtendedOrder, error) {
+func (o *OrderService) UpdateForCSR(ctx context.Context, orderURL string, csr []byte, expectedIdentifiers []acme.Identifier) (acme.ExtendedOrder, error) {
 	csrMsg := acme.CSRMessage{
 		Csr: base64.RawURLEncoding.EncodeToString(csr),
 	}
@@ -135,8 +135,20 @@ func (o *OrderService) UpdateForCSR(ctx context.Context, orderURL string, csr []
 		return acme.ExtendedOrder{}, fmt.Errorf("invalid order: %w", order.Err())
 	}
 
+	// The order updated by the server must stay bound to the original application:
+	// the identifiers of the finalized order have to be the same as the ones
+	// that were ordered (server-side deduplication is allowed by RFC 8555 §7.4).
+	// A server that silently changes the identifiers would otherwise let the
+	// client finalize and download a certificate for a different set of names.
+	if len(expectedIdentifiers) > 0 && compareIdentifiers(expectedIdentifiers, order.Identifiers) != 0 {
+		return acme.ExtendedOrder{},
+			fmt.Errorf("order identifiers have been modified by the ACME server (RFC8555 §7.4): %+v != %+v",
+				expectedIdentifiers, order.Identifiers)
+	}
+
 	return acme.ExtendedOrder{
 		Order:      order,
+		Location:   orderURL,
 		RetryAfter: sender.GetRetryAfter(resp),
 	}, nil
 }

@@ -198,7 +198,7 @@ func TestCertifier_checkResponse(t *testing.T) {
 
 	certRes := &Resource{}
 
-	valid, err := certifier.checkResponse(t.Context(), certRes, order, true, "")
+	valid, err := certifier.checkResponse(t.Context(), certRes, order, nil, true, "")
 	require.NoError(t, err)
 	assert.True(t, valid)
 	assert.NotNil(t, certRes)
@@ -234,7 +234,7 @@ func TestCertifier_checkResponse_issuerRelUp(t *testing.T) {
 
 	certRes := &Resource{}
 
-	valid, err := certifier.checkResponse(t.Context(), certRes, order, true, "")
+	valid, err := certifier.checkResponse(t.Context(), certRes, order, nil, true, "")
 	require.NoError(t, err)
 	assert.True(t, valid)
 	assert.NotNil(t, certRes)
@@ -270,7 +270,7 @@ func TestCertifier_checkResponse_no_bundle(t *testing.T) {
 
 	certRes := &Resource{}
 
-	valid, err := certifier.checkResponse(t.Context(), certRes, order, false, "")
+	valid, err := certifier.checkResponse(t.Context(), certRes, order, nil, false, "")
 	require.NoError(t, err)
 	assert.True(t, valid)
 	assert.NotNil(t, certRes)
@@ -316,7 +316,7 @@ func TestCertifier_checkResponse_alternate(t *testing.T) {
 		Domains: []string{"example.com"},
 	}
 
-	valid, err := certifier.checkResponse(t.Context(), certRes, order, true, "DST Root CA X3")
+	valid, err := certifier.checkResponse(t.Context(), certRes, order, nil, true, "DST Root CA X3")
 	require.NoError(t, err)
 
 	assert.True(t, valid)
@@ -457,7 +457,7 @@ func TestCertifier_getForCSR_orderProcessingRetryAfter(t *testing.T) {
 		Location: server.URL + "/order",
 	}
 
-	_, err = certifier.getForCSR(t.Context(), &Resource{}, order, []byte("test-csr"), false, "")
+	_, err = certifier.getForCSR(t.Context(), &Resource{}, order, nil, false, "")
 	require.NoError(t, err)
 
 	assert.Equal(t, 3, int(counter.Load()))

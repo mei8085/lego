@@ -314,7 +314,10 @@ func (c *Certifier) ObtainForCSR(ctx context.Context, request ObtainForCSRReques
 		certRes.PrivateKey = certcrypto.PEMEncode(request.PrivateKey)
 	}
 
-	cert, err := c.getForCSR(ctx, certRes, order, request.CSR.Raw, request.Bundle, request.PreferredChain)
+	// The CSR carries the public key identity of this application and is used
+	// to verify that the certificate eventually issued by the server is bound
+	// to this very request.
+	cert, err := c.getForCSR(ctx, certRes, order, request.CSR, request.Bundle, request.PreferredChain)
 	if err != nil {
 		for _, auth := range authz {
 			failures.Add(challenge.GetTargetedDomain(auth), err)
@@ -382,17 +385,27 @@ func (c *Certifier) getForOrder(ctx context.Context, domains []string, order acm
 		return nil, err
 	}
 
+	parsedCSR, err := x509.ParseCertificateRequest(csr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse the certificate request: %w", err)
+	}
+
 	certRes := &Resource{
 		ID:         domains[0],
 		Domains:    domains,
 		PrivateKey: certcrypto.PEMEncode(privateKey),
 	}
 
-	return c.getForCSR(ctx, certRes, order, csr, request.Bundle, request.PreferredChain)
+	return c.getForCSR(ctx, certRes, order, parsedCSR, request.Bundle, request.PreferredChain)
 }
 
-func (c *Certifier) getForCSR(ctx context.Context, certRes *Resource, order acme.ExtendedOrder, csr []byte, bundle bool, preferredChain string) (*Resource, error) {
-	respOrder, err := c.core.Orders.UpdateForCSR(ctx, order.Finalize, csr)
+func (c *Certifier) getForCSR(ctx context.Context, certRes *Resource, order acme.ExtendedOrder, csr *x509.CertificateRequest, bundle bool, preferredChain string) (*Resource, error) {
+	var csrRaw []byte
+	if csr != nil {
+		csrRaw = csr.Raw
+	}
+
+	respOrder, err := c.core.Orders.UpdateForCSR(ctx, order.Finalize, csrRaw, order.Identifiers)
 	if err != nil {
 		return nil, err
 	}
@@ -401,7 +414,7 @@ func (c *Certifier) getForCSR(ctx context.Context, certRes *Resource, order acme
 
 	if respOrder.Status == acme.StatusValid {
 		// if the certificate is available right away, shortcut!
-		ok, errR := c.checkResponse(ctx, certRes, respOrder, bundle, preferredChain)
+		ok, errR := c.checkResponse(ctx, certRes, respOrder, csr, bundle, preferredChain)
 		if errR != nil {
 			return nil, errR
 		}
@@ -424,17 +437,23 @@ func (c *Certifier) getForCSR(ctx context.Context, certRes *Resource, order acme
 		log.DomainsAttr(certRes.Domains),
 	)
 
+	// Honor the server-suggested wait without ever exceeding the caller's
+	// time limit or blocking past a context cancellation.
 	if respOrder.RetryAfter > 0 {
-		time.Sleep(respOrder.RetryAfter)
+		if errW := wait.SleepContext(ctx, respOrder.RetryAfter); errW != nil {
+			return nil, errW
+		}
 	}
 
-	err = wait.ForNext(timeout, interval, func() (bool, time.Duration, error) {
+	err = wait.ForNextContext(ctx, timeout, interval, func() (bool, time.Duration, error) {
+		// Always poll the original order location created for this application:
+		// the certificate must come from the same order that was authorized.
 		ord, errW := c.core.Orders.Get(ctx, order.Location)
 		if errW != nil {
 			return false, 0, errW
 		}
 
-		done, errW := c.checkResponse(ctx, certRes, ord, bundle, preferredChain)
+		done, errW := c.checkResponse(ctx, certRes, ord, csr, bundle, preferredChain)
 		if errW != nil {
 			return false, ord.RetryAfter, errW
 		}
@@ -450,21 +469,37 @@ func (c *Certifier) getForCSR(ctx context.Context, certRes *Resource, order acme
 
 // checkResponse checks to see if the certificate is ready and a link is contained in the response.
 //
-// If so, loads it into certRes and returns true.
+// If so, verifies that every offered certificate chain is bound to the submitted
+// certificate request (same public key and identifiers), loads the selected chain
+// into certRes and returns true.
 // If the cert is not yet ready, it returns false.
 //
 // The certRes input should already have the Domain (common name) field populated.
 //
 // If bundle is true, the certificate will be bundled with the issuer's cert.
-func (c *Certifier) checkResponse(ctx context.Context, certRes *Resource, order acme.ExtendedOrder, bundle bool, preferredChain string) (bool, error) {
+func (c *Certifier) checkResponse(ctx context.Context, certRes *Resource, order acme.ExtendedOrder, csr *x509.CertificateRequest, bundle bool, preferredChain string) (bool, error) {
 	valid, err := checkOrderStatus(order)
 	if err != nil || !valid {
 		return valid, err
 	}
 
+	if order.Certificate == "" {
+		return false, errors.New("the server marked the order as valid but did not provide a certificate URL")
+	}
+
 	certs, err := c.core.Certificates.GetAll(ctx, order.Certificate, bundle)
 	if err != nil {
 		return false, err
+	}
+
+	// Verify every certificate offered for this order matches the original
+	// request before any of them can be selected or stored in the resource:
+	// a mismatched certificate must never be returned to the caller, not even
+	// as a fallback when the preferred chain cannot be found.
+	for link, cert := range certs {
+		if errV := verifyCertificateMatchesRequest(cert.Cert, csr, link); errV != nil {
+			return false, errV
+		}
 	}
 
 	// Set the default certificate
@@ -505,6 +540,27 @@ func (c *Certifier) checkResponse(ctx context.Context, certRes *Resource, order 
 	)
 
 	return true, nil
+}
+
+// verifyCertificateMatchesRequest parses the leaf of the issued certificate
+// chain and checks that its public key and identifiers match the CSR of the
+// original application.
+func verifyCertificateMatchesRequest(certPEM []byte, csr *x509.CertificateRequest, link string) error {
+	if csr == nil {
+		// No request identity to bind to (e.g. direct certificate fetch).
+		return nil
+	}
+
+	leaf, err := certcrypto.ParsePEMCertificate(certPEM)
+	if err != nil {
+		return fmt.Errorf("failed to parse the certificate returned at %q: %w", link, err)
+	}
+
+	if err := checkCertificateIdentity(leaf, csr); err != nil {
+		return fmt.Errorf("certificate returned at %q is not bound to the original certificate request: %w", link, err)
+	}
+
+	return nil
 }
 
 // Revoke takes a PEM encoded certificate or bundle and tries to revoke it at the CA.
